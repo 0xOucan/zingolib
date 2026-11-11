@@ -90,9 +90,9 @@ that holds the spending key. The wallet then builds PCZTs for that signer (exter
             .arg(Arg::new("signer-account")
                 .long("signer-account")
                 .value_name("INDEX")
-                .requires("signer-fingerprint")
+                .requires("signer-source")
                 .value_parser(clap::value_parser!(u32))
-                .help("With --signer-fingerprint: the signer's ZIP 32 account index. Defaults to 0."))
+                .help("With --signer-fingerprint or --leek-port: the signer's ZIP 32 account index. Defaults to 0."))
             .arg(Arg::new("birthday")
                 .long("birthday")
                 .value_name("birthday")
@@ -142,7 +142,13 @@ Takes --signer-account; --birthday overrides the board's. Needs the `leekwallet`
             .arg(Arg::new("log-file")
                 .long("log-file")
                 .value_name("PATH")
-                .help("Path to the log file for interactive mode. Defaults to .zingo-cli/cli.log"));
+                .help("Path to the log file for interactive mode. Defaults to .zingo-cli/cli.log"))
+            // --signer-account names the account on the signer, which comes
+            // either from --signer-fingerprint (with --viewkey) or from the
+            // board itself (--leek-port).
+            .group(clap::ArgGroup::new("signer-source")
+                .args(["signer-fingerprint", "leek-port"])
+                .multiple(false));
     commands::CliCommand::augment_subcommands(session_options)
         .about(
             "A command-line light wallet for Zcash. Runs the given command and exits, or \

@@ -1476,3 +1476,34 @@ mod offline_mode_pin {
         );
     }
 }
+
+mod leek_signer_args {
+    use super::*;
+
+    /// --signer-account names the board's account when the wallet comes from
+    /// --leek-port; it used to demand --signer-fingerprint (and so --viewkey).
+    #[test]
+    fn signer_account_with_leek_port() {
+        let m = parse(&[
+            examples::BIN_NAME,
+            "--chain",
+            "testnet",
+            "--leek-port",
+            "/dev/ttyACM0",
+            "--signer-account",
+            "0",
+            "addresses",
+        ]);
+        assert_eq!(m.get_one::<u32>("signer-account"), Some(&0));
+    }
+
+    /// Without a signer source it is still refused.
+    #[test]
+    fn signer_account_alone_is_refused() {
+        assert!(
+            build_clap_app()
+                .try_get_matches_from([examples::BIN_NAME, "--signer-account", "0", "addresses"])
+                .is_err()
+        );
+    }
+}
