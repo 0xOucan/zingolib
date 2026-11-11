@@ -135,6 +135,9 @@ pub enum CommandError {
     #[cfg(feature = "nym")]
     #[error(transparent)]
     Network(#[from] NetworkCommandError),
+    #[cfg(feature = "leekwallet")]
+    #[error(transparent)]
+    Leek(#[from] crate::leek::LeekCommandError),
     #[error("the `{0}` command runs only at the interactive prompt")]
     ReplOnly(String),
     #[error("the sync task panicked: {0}")]
@@ -2495,6 +2498,25 @@ pub(crate) enum CliCommand {
         )
     )]
     ParseViewkey { viewkey: String },
+    #[cfg(feature = "leekwallet")]
+    #[command(
+        about = "Sign the stored proposal with a LeekWallet board (USB or SD card).",
+        long_about = indoc! {r"
+            Sign the stored proposal of an external-signer wallet with a LeekWallet
+            board, after `send` and instead of `confirm`. The result is stored as
+            Calculated; `transmit` broadcasts it.
+
+            `sign_usb --port <path>` pairs over USB serial (compare the six digits
+            on the board, press ALLOW), uploads the signer view, and waits for the
+            review on the board. `export --card <dir>` writes LEEKZ/unsigned.pczt
+            for the board's SD menu; `import --card <dir>` applies the board's
+            LEEKZ/signed.zsig. `abandon` ends the session and releases its inputs.
+        "}
+    )]
+    Pczt {
+        #[command(subcommand)]
+        sub: crate::leek::PcztSubCommand,
+    },
     #[command(
         about = "Send ZEC, fusing `send` and `confirm`.",
         long_about = concat!(
@@ -2803,6 +2825,8 @@ impl CliCommand {
             CliCommand::Notes { .. } => "Notes",
             CliCommand::ParseAddress { .. } => "ParseAddress",
             CliCommand::ParseViewkey { .. } => "ParseViewkey",
+            #[cfg(feature = "leekwallet")]
+            CliCommand::Pczt { .. } => "Pczt",
             CliCommand::Quicksend { .. } => "Quicksend",
             CliCommand::Quickshield => "Quickshield",
             CliCommand::Quit => "Quit",
@@ -2863,6 +2887,8 @@ impl CliCommand {
             | CliCommand::Version => false,
             #[cfg(feature = "nym")]
             CliCommand::Network { .. } => true,
+            #[cfg(feature = "leekwallet")]
+            CliCommand::Pczt { .. } => true,
             CliCommand::Addresses
             | CliCommand::Balance
             | CliCommand::Birthday
@@ -2923,6 +2949,9 @@ impl CliCommand {
             #[cfg(feature = "nym")]
             CliCommand::Network { sub } => matches!(sub, Some(NetworkSubCommand::Probe { .. })),
             CliCommand::Drain { sub } => matches!(sub, DrainSubCommand::Now),
+            // Signing and storing never broadcast; `transmit` does.
+            #[cfg(feature = "leekwallet")]
+            CliCommand::Pczt { .. } => false,
             CliCommand::Split { sub } => matches!(sub, SplitSubCommand::Now),
             CliCommand::Migration { sub } => matches!(
                 sub,
@@ -3120,6 +3149,10 @@ fn every_command() -> Vec<CliCommand> {
         },
         CliCommand::ParseViewkey {
             viewkey: String::new(),
+        },
+        #[cfg(feature = "leekwallet")]
+        CliCommand::Pczt {
+            sub: crate::leek::PcztSubCommand::Abandon,
         },
         CliCommand::Quicksend { args: Vec::new() },
         CliCommand::Quickshield,
@@ -3319,6 +3352,8 @@ async fn run_parsed(
         CliCommand::Network { sub } => network(sub, lightclient).await,
         CliCommand::ParseAddress { address } => parse_address(&address),
         CliCommand::ParseViewkey { viewkey } => parse_viewkey(&viewkey),
+        #[cfg(feature = "leekwallet")]
+        CliCommand::Pczt { sub } => Ok(crate::leek::pczt(sub, lightclient).await?),
         CliCommand::Quicksend { args } => quicksend(&name, &args, lightclient).await,
         CliCommand::Quickshield => quickshield(lightclient).await,
         CliCommand::Quit => quit(lightclient).await,

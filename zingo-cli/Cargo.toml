@@ -28,6 +28,10 @@ nym = ["zingolib/nym"]
 # mixnet beside it, and a measurement that separates the mixnet's cost from
 # the scan's needs exactly that arm.
 nakednet-test-mode = []
+# LeekWallet hardware signing (prototype, not upstream): the `pczt` command
+# and `--leek-port`. The SDK crates are path dependencies on a local clone of
+# github.com/0xOucan/leekwallet-zcash beside this checkout.
+leekwallet = ["dep:leek-zcash", "dep:leek-device"]
 
 [dependencies]
 pepper-sync = { workspace = true }
@@ -60,9 +64,18 @@ tracing-subscriber = { workspace = true }
 zip32 = { workspace = true }
 thiserror.workspace = true
 zingo-net-diag.workspace = true
+# Apache-2.0, from the LeekWallet SDK. leek-device is named only to turn on
+# its `serial` feature (the desktop USB serial port); the code reaches it
+# through `leek_zcash::leek_device`.
+leek-zcash = { path = "../../../leekwallet-zcash/host/leek-zcash", optional = true }
+leek-device = { path = "../../../leekwallet-zcash/host/leek-device", optional = true, features = ["serial"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The LeekWallet round-trip test's software signer (feature `leekwallet`).
+bip0039 = { workspace = true }
+orchard = { workspace = true }
+pczt = { workspace = true }
 # The offline-contract tests build Indexerless clients from synthetic
 # wallets, so every command's offline behavior is pinned without a network.
 zingolib = { workspace = true, features = ["testutils"] }

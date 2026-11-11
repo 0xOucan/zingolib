@@ -14,6 +14,8 @@
 
 mod commands;
 mod examples;
+#[cfg(feature = "leekwallet")]
+mod leek;
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -78,6 +80,19 @@ keep it to this process and its child."))
                 .value_name("UFVK")
                 .value_parser(parse_ufvk)
                 .help("Create a new wallet with the given encoded unified full viewing key. Will fail if wallet already exists"))
+            .arg(Arg::new("signer-fingerprint")
+                .long("signer-fingerprint")
+                .value_name("HEX")
+                .requires("viewkey")
+                .value_parser(parse_seed_fingerprint)
+                .help("With --viewkey: the ZIP 32 seed fingerprint (32 bytes, hex) of the hardware signer \
+that holds the spending key. The wallet then builds PCZTs for that signer (external-signer wallet)."))
+            .arg(Arg::new("signer-account")
+                .long("signer-account")
+                .value_name("INDEX")
+                .requires("signer-fingerprint")
+                .value_parser(clap::value_parser!(u32))
+                .help("With --signer-fingerprint: the signer's ZIP 32 account index. Defaults to 0."))
             .arg(Arg::new("birthday")
                 .long("birthday")
                 .value_name("birthday")
@@ -117,6 +132,13 @@ to the chain's Default Indexer.")
                 .long("data-dir")
                 .value_name("data-dir")
                 .help("Absolute path to use as data directory"))
+            .arg(Arg::new("leek-port")
+                .long("leek-port")
+                .value_name("PATH")
+                .conflicts_with_all(["seed", "viewkey"])
+                .help("Create a new external-signer wallet from a LeekWallet board on this serial port \
+(e.g. /dev/ttyACM0): pair (compare the six digits), confirm on the board, import its viewing key. \
+Takes --signer-account; --birthday overrides the board's. Needs the `leekwallet` build feature."))
             .arg(Arg::new("log-file")
                 .long("log-file")
                 .value_name("PATH")
@@ -229,6 +251,14 @@ fn parse_seed(s: &str) -> Result<String, String> {
         Err(_) => Err("Unexpected failure to parse String!!".to_string()),
     }
 }
+/// Parses a ZIP 32 seed fingerprint: 32 bytes as 64 hex digits.
+fn parse_seed_fingerprint(s: &str) -> Result<[u8; 32], String> {
+    hex::decode(s)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .ok_or_else(|| "expected 32 bytes as 64 hex digits".to_string())
+}
+
 /// Parse encoded UFVK to String and check for whitespaces
 fn parse_ufvk(s: &str) -> Result<String, String> {
     match s.parse::<String>() {
@@ -1046,6 +1076,9 @@ pub(crate) struct CliConfigTemplate {
     server: Option<http::Uri>,
     seed: Option<String>,
     ufvk: Option<String>,
+    /// With `ufvk`: the hardware signer's ZIP 32 seed fingerprint and
+    /// account index, making the wallet an external-signer wallet.
+    signer: Option<([u8; 32], u32)>,
     birthday: u64,
     data_dir: PathBuf,
     sync: bool,
@@ -1111,6 +1144,12 @@ impl CliConfigTemplate {
             std::env::var(SEED_ENV).ok(),
         );
         let ufvk = matches.get_one::<String>("viewkey").cloned();
+        let signer = matches
+            .get_one::<[u8; 32]>("signer-fingerprint")
+            .map(|fingerprint| {
+                let account = matches.get_one::<u32>("signer-account").copied();
+                (*fingerprint, account.unwrap_or(0))
+            });
         if seed.is_some() && ufvk.is_some() {
             return Err(ConfigTemplateError::BothSeedAndViewkey);
         }
@@ -1185,6 +1224,7 @@ impl CliConfigTemplate {
             server,
             seed,
             ufvk,
+            signer,
             birthday,
             data_dir,
             sync,
@@ -1192,6 +1232,44 @@ impl CliConfigTemplate {
             chaintype,
             nym_proxy_path,
         })
+    }
+}
+
+impl CliConfigTemplate {
+    /// Fills the key source from a LeekWallet board: its UFVK, its ZIP 32
+    /// derivation, and its birthday unless `--birthday` was given. Only for
+    /// a new wallet: an existing wallet file is never replaced.
+    #[cfg(feature = "leekwallet")]
+    fn import_from_board(
+        &mut self,
+        port: &str,
+        account: u32,
+        birthday_given: bool,
+    ) -> std::io::Result<()> {
+        if self.data_dir.join(DEFAULT_WALLET_NAME).exists() {
+            return Err(std::io::Error::other(
+                "--leek-port creates a new wallet, and a wallet file already exists here",
+            ));
+        }
+        let board = leek::board_account(port, self.chaintype, account)
+            .map_err(|e| std::io::Error::other(commands::render_error_chain(&e)))?;
+        if !birthday_given {
+            self.birthday = u64::from(board.birthday.ok_or_else(|| {
+                std::io::Error::other(
+                    "the board holds no birthday for this account; pass --birthday",
+                )
+            })?);
+        }
+        self.ufvk = Some(board.ufvk);
+        self.signer = Some((board.seed_fingerprint, board.account));
+        Ok(())
+    }
+
+    #[cfg(not(feature = "leekwallet"))]
+    fn import_from_board(&mut self, _: &str, _: u32, _: bool) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "--leek-port needs a zingo-cli built with the `leekwallet` feature",
+        ))
     }
 }
 
@@ -1221,11 +1299,21 @@ async fn build_zingo_config(filled_template: &CliConfigTemplate) -> std::io::Res
             wallet_settings,
         }
     } else if let Some(ufvk) = filled_template.ufvk.clone() {
-        // Create client from UFVK
-        WalletConfig::Ufvk {
-            ufvk,
-            birthday: filled_template.birthday as u32,
-            wallet_settings,
+        match filled_template.signer {
+            // An external-signer wallet: the UFVK plus the signer's derivation.
+            Some((seed_fingerprint, account_id)) => WalletConfig::UfvkWithDerivation {
+                ufvk,
+                birthday: filled_template.birthday as u32,
+                seed_fingerprint,
+                account_id,
+                wallet_settings,
+            },
+            // Create client from UFVK
+            None => WalletConfig::Ufvk {
+                ufvk,
+                birthday: filled_template.birthday as u32,
+                wallet_settings,
+            },
         }
     } else if wallet_path.exists() {
         // Create client from wallet file
@@ -1631,8 +1719,14 @@ pub fn run_cli(matches: clap::ArgMatches) -> std::io::Result<ExitCode> {
         return Ok(ExitCode::from(2));
     }
     let communications = get_communications(&matches)?;
-    let cli_config =
+    let leek_port = matches.get_one::<String>("leek-port").cloned();
+    let signer_account = matches.get_one::<u32>("signer-account").copied();
+    let birthday_given = matches.get_one::<u32>("birthday").is_some();
+    let mut cli_config =
         CliConfigTemplate::fill(mode, communications, matches).map_err(std::io::Error::other)?;
+    if let Some(port) = leek_port {
+        cli_config.import_from_board(&port, signer_account.unwrap_or(0), birthday_given)?;
+    }
     dispatch_command_or_start_interactive(&cli_config)
 }
 
