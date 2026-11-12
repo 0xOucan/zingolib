@@ -2500,17 +2500,23 @@ pub(crate) enum CliCommand {
     ParseViewkey { viewkey: String },
     #[cfg(feature = "leekwallet")]
     #[command(
-        about = "Sign the stored proposal with a LeekWallet board (USB or SD card).",
+        about = "Sign the stored proposal with a LeekWallet board (USB, Bluetooth, QR or SD card).",
         long_about = indoc! {r"
             Sign the stored proposal of an external-signer wallet with a LeekWallet
             board, after `send` and instead of `confirm`. The result is stored as
             Calculated; `transmit` broadcasts it.
 
-            `sign_usb --port <path>` pairs over USB serial (compare the six digits
-            on the board, press ALLOW), uploads the signer view, and waits for the
-            review on the board. `export --card <dir>` writes LEEKZ/unsigned.pczt
-            for the board's SD menu; `import --card <dir>` applies the board's
-            LEEKZ/signed.zsig. `abandon` ends the session and releases its inputs.
+            `sign_usb --port <path>` pairs over USB serial and `sign_ble [--addr
+            <addr>]` over Bluetooth LE (compare the six digits on the board, press
+            ALLOW), upload the signer view, and wait for the review on the board.
+            `sign_qr` shows the signer view as an animated ur:leek-pczt for the
+            board's camera (in the terminal, or `--html <file>` for a browser),
+            then reads back the board's ur:leek-zsig, pasted or `--reply <file>`;
+            `import_qr` reads a reply later. `export --card <dir>` writes
+            LEEKZ/unsigned.pczt for the board's SD menu; `import --card <dir>`
+            applies the board's LEEKZ/signed.zsig. Every signature is verified
+            before it is applied. `abandon` ends the session and releases its
+            inputs.
         "}
     )]
     Pczt {

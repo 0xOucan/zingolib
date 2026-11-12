@@ -92,7 +92,7 @@ that holds the spending key. The wallet then builds PCZTs for that signer (exter
                 .value_name("INDEX")
                 .requires("signer-source")
                 .value_parser(clap::value_parser!(u32))
-                .help("With --signer-fingerprint or --leek-port: the signer's ZIP 32 account index. Defaults to 0."))
+                .help("With --signer-fingerprint, --leek-port or --leek-ble: the signer's ZIP 32 account index. Defaults to 0."))
             .arg(Arg::new("birthday")
                 .long("birthday")
                 .value_name("birthday")
@@ -139,16 +139,39 @@ to the chain's Default Indexer.")
                 .help("Create a new external-signer wallet from a LeekWallet board on this serial port \
 (e.g. /dev/ttyACM0): pair (compare the six digits), confirm on the board, import its viewing key. \
 Takes --signer-account; --birthday overrides the board's. Needs the `leekwallet` build feature."))
+            .arg(Arg::new("leek-ble")
+                .long("leek-ble")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with_all(["seed", "viewkey", "leek-port"])
+                .help("Create a new external-signer wallet from a LeekWallet board over Bluetooth LE \
+(on the board: Settings → Link → Bluetooth): pair (compare the six digits), confirm on the board, import \
+its viewing key. Takes --signer-account; --birthday overrides the board's. Needs the `leekwallet` build \
+feature."))
+            .arg(Arg::new("leek-ble-addr")
+                .long("leek-ble-addr")
+                .value_name("ADDR")
+                .conflicts_with_all(["seed", "viewkey", "leek-port"])
+                .help("The board's Bluetooth address (implies --leek-ble), needed only when more than \
+one board is advertising."))
+            .arg(Arg::new("leek-ble-scan")
+                .long("leek-ble-scan")
+                .value_name("SECS")
+                .requires("leek-ble-source")
+                .value_parser(parse_scan_secs)
+                .help("With --leek-ble: how long to scan for the board, in seconds (1 to 60). Defaults to 4."))
             .arg(Arg::new("log-file")
                 .long("log-file")
                 .value_name("PATH")
                 .help("Path to the log file for interactive mode. Defaults to .zingo-cli/cli.log"))
             // --signer-account names the account on the signer, which comes
             // either from --signer-fingerprint (with --viewkey) or from the
-            // board itself (--leek-port).
+            // board itself (--leek-port, --leek-ble).
             .group(clap::ArgGroup::new("signer-source")
-                .args(["signer-fingerprint", "leek-port"])
-                .multiple(false));
+                .args(["signer-fingerprint", "leek-port", "leek-ble", "leek-ble-addr"])
+                .multiple(true))
+            .group(clap::ArgGroup::new("leek-ble-source")
+                .args(["leek-ble", "leek-ble-addr"])
+                .multiple(true));
     commands::CliCommand::augment_subcommands(session_options)
         .about(
             "A command-line light wallet for Zcash. Runs the given command and exits, or \
@@ -257,6 +280,15 @@ fn parse_seed(s: &str) -> Result<String, String> {
         Err(_) => Err("Unexpected failure to parse String!!".to_string()),
     }
 }
+/// Parses a Bluetooth scan window: 1 to 60 whole seconds.
+pub(crate) fn parse_scan_secs(s: &str) -> Result<std::time::Duration, String> {
+    s.parse::<u64>()
+        .ok()
+        .filter(|secs| (1..=60).contains(secs))
+        .map(std::time::Duration::from_secs)
+        .ok_or_else(|| "a Bluetooth scan is 1 to 60 seconds".to_string())
+}
+
 /// Parses a ZIP 32 seed fingerprint: 32 bytes as 64 hex digits.
 fn parse_seed_fingerprint(s: &str) -> Result<[u8; 32], String> {
     hex::decode(s)
@@ -1241,6 +1273,38 @@ impl CliConfigTemplate {
     }
 }
 
+/// The LeekWallet board a new wallet is imported from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BoardSource {
+    /// `--leek-port`: the board's USB serial port.
+    Usb(String),
+    /// `--leek-ble`: the board at `--leek-ble-addr`, or the only one
+    /// advertising, scanned for `--leek-ble-scan` seconds.
+    Ble {
+        addr: Option<String>,
+        scan: Option<std::time::Duration>,
+    },
+}
+
+impl BoardSource {
+    fn from_matches(matches: &clap::ArgMatches) -> Option<Self> {
+        let addr = matches.get_one::<String>("leek-ble-addr").cloned();
+        if matches.get_flag("leek-ble") || addr.is_some() {
+            Some(Self::Ble {
+                addr,
+                scan: matches
+                    .get_one::<std::time::Duration>("leek-ble-scan")
+                    .copied(),
+            })
+        } else {
+            matches
+                .get_one::<String>("leek-port")
+                .cloned()
+                .map(Self::Usb)
+        }
+    }
+}
+
 impl CliConfigTemplate {
     /// Fills the key source from a LeekWallet board: its UFVK, its ZIP 32
     /// derivation, and its birthday unless `--birthday` was given. Only for
@@ -1248,16 +1312,23 @@ impl CliConfigTemplate {
     #[cfg(feature = "leekwallet")]
     fn import_from_board(
         &mut self,
-        port: &str,
+        source: BoardSource,
         account: u32,
         birthday_given: bool,
     ) -> std::io::Result<()> {
         if self.data_dir.join(DEFAULT_WALLET_NAME).exists() {
             return Err(std::io::Error::other(
-                "--leek-port creates a new wallet, and a wallet file already exists here",
+                "--leek-port and --leek-ble create a new wallet, and a wallet file already exists here",
             ));
         }
-        let board = leek::board_account(port, self.chaintype, account)
+        let link = match source {
+            BoardSource::Usb(port) => leek::Link::Usb(port),
+            BoardSource::Ble { addr, scan } => leek::Link::Ble {
+                addr,
+                scan: scan.unwrap_or(leek::DEFAULT_BLE_SCAN),
+            },
+        };
+        let board = leek::board_account(&link, self.chaintype, account)
             .map_err(|e| std::io::Error::other(commands::render_error_chain(&e)))?;
         if !birthday_given {
             self.birthday = u64::from(board.birthday.ok_or_else(|| {
@@ -1272,9 +1343,9 @@ impl CliConfigTemplate {
     }
 
     #[cfg(not(feature = "leekwallet"))]
-    fn import_from_board(&mut self, _: &str, _: u32, _: bool) -> std::io::Result<()> {
+    fn import_from_board(&mut self, _: BoardSource, _: u32, _: bool) -> std::io::Result<()> {
         Err(std::io::Error::other(
-            "--leek-port needs a zingo-cli built with the `leekwallet` feature",
+            "--leek-port and --leek-ble need a zingo-cli built with the `leekwallet` feature",
         ))
     }
 }
@@ -1725,13 +1796,13 @@ pub fn run_cli(matches: clap::ArgMatches) -> std::io::Result<ExitCode> {
         return Ok(ExitCode::from(2));
     }
     let communications = get_communications(&matches)?;
-    let leek_port = matches.get_one::<String>("leek-port").cloned();
+    let board = BoardSource::from_matches(&matches);
     let signer_account = matches.get_one::<u32>("signer-account").copied();
     let birthday_given = matches.get_one::<u32>("birthday").is_some();
     let mut cli_config =
         CliConfigTemplate::fill(mode, communications, matches).map_err(std::io::Error::other)?;
-    if let Some(port) = leek_port {
-        cli_config.import_from_board(&port, signer_account.unwrap_or(0), birthday_given)?;
+    if let Some(source) = board {
+        cli_config.import_from_board(source, signer_account.unwrap_or(0), birthday_given)?;
     }
     dispatch_command_or_start_interactive(&cli_config)
 }

@@ -28,10 +28,19 @@ nym = ["zingolib/nym"]
 # mixnet beside it, and a measurement that separates the mixnet's cost from
 # the scan's needs exactly that arm.
 nakednet-test-mode = []
-# LeekWallet hardware signing (prototype, not upstream): the `pczt` command
-# and `--leek-port`. The SDK crates are path dependencies on a local clone of
-# github.com/0xOucan/leekwallet-zcash beside this checkout.
-leekwallet = ["dep:leek-zcash", "dep:leek-device"]
+# LeekWallet hardware signing (prototype, not upstream): the `pczt` command,
+# `--leek-port` and `--leek-ble`, over USB, Bluetooth LE, QR and the SD card.
+# The SDK crates come from github.com/0xOucan/leekwallet-zcash at a pinned
+# commit. Bluetooth is btleplug, which on Linux builds against libdbus-1
+# (`libdbus-1-dev`).
+leekwallet = [
+    "dep:leek-zcash",
+    "dep:leek-device",
+    "dep:leek-ur",
+    "dep:qrcode",
+]
+# `pczt sign_qr --camera`: reads the board's reply off a V4L2 webcam (Linux).
+leekwallet-qr-camera = ["leekwallet", "dep:linuxvideo", "dep:rqrr"]
 
 [dependencies]
 pepper-sync = { workspace = true }
@@ -64,11 +73,23 @@ tracing-subscriber = { workspace = true }
 zip32 = { workspace = true }
 thiserror.workspace = true
 zingo-net-diag.workspace = true
-# Apache-2.0, from the LeekWallet SDK. leek-device is named only to turn on
-# its `serial` feature (the desktop USB serial port); the code reaches it
-# through `leek_zcash::leek_device`.
-leek-zcash = { path = "../../../leekwallet-zcash/host/leek-zcash", optional = true }
-leek-device = { path = "../../../leekwallet-zcash/host/leek-device", optional = true, features = ["serial"] }
+# Apache-2.0, the LeekWallet SDK, pinned to one commit of its main branch.
+# leek-device is named to turn on its desktop links: `serial` (USB) and
+# `ble` (Bluetooth LE, the LeekWallet app's btleplug transport); the code
+# reaches it through `leek_zcash::leek_device`. leek-ur is the UR of the QR
+# air gap (`ur:leek-pczt` out, `ur:leek-zsig` back).
+leek-zcash = { git = "https://github.com/0xOucan/leekwallet-zcash", rev = "e58dc8d620bf78a02640b676db182c64934d61ef", optional = true }
+leek-device = { git = "https://github.com/0xOucan/leekwallet-zcash", rev = "e58dc8d620bf78a02640b676db182c64934d61ef", optional = true, features = ["serial", "ble"] }
+leek-ur = { git = "https://github.com/0xOucan/leekwallet-zcash", rev = "e58dc8d620bf78a02640b676db182c64934d61ef", optional = true }
+# The QR codes drawn in the terminal or an HTML page; without its `image`
+# feature it is pure Rust with no dependencies (MIT OR Apache-2.0).
+qrcode = { version = "=0.14.1", default-features = false, optional = true }
+# The webcam reader of `leekwallet-qr-camera`: a pure-Rust QR decoder
+# ((MIT OR Apache-2.0) AND ISC), and V4L2 by ioctls (0BSD, Linux only).
+rqrr = { version = "=0.11.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linuxvideo = { version = "=0.3.5", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1479,6 +1479,7 @@ mod offline_mode_pin {
 
 mod leek_signer_args {
     use super::*;
+    use crate::BoardSource;
 
     /// --signer-account names the board's account when the wallet comes from
     /// --leek-port; it used to demand --signer-fingerprint (and so --viewkey).
@@ -1505,5 +1506,111 @@ mod leek_signer_args {
                 .try_get_matches_from([examples::BIN_NAME, "--signer-account", "0", "addresses"])
                 .is_err()
         );
+    }
+
+    fn refused(args: &[&str]) -> bool {
+        build_clap_app()
+            .try_get_matches_from(std::iter::once(examples::BIN_NAME).chain(args.iter().copied()))
+            .is_err()
+    }
+
+    /// --leek-ble imports from a board over Bluetooth, and takes the same
+    /// --signer-account as --leek-port.
+    #[test]
+    fn leek_ble_with_signer_account() {
+        let m = parse(&[
+            examples::BIN_NAME,
+            "--chain",
+            "testnet",
+            "--leek-ble",
+            "--signer-account",
+            "1",
+            "addresses",
+        ]);
+        assert_eq!(m.get_one::<u32>("signer-account"), Some(&1));
+        assert_eq!(
+            BoardSource::from_matches(&m),
+            Some(BoardSource::Ble {
+                addr: None,
+                scan: None
+            })
+        );
+    }
+
+    /// --leek-ble-addr picks one board and implies --leek-ble, as zecz's
+    /// --ble-addr implies --ble.
+    #[test]
+    fn leek_ble_addr_implies_leek_ble() {
+        let m = parse(&[
+            examples::BIN_NAME,
+            "--leek-ble-addr",
+            "28:84:85:9F:D2:0E",
+            "--leek-ble-scan",
+            "10",
+            "--signer-account",
+            "0",
+            "addresses",
+        ]);
+        assert_eq!(
+            BoardSource::from_matches(&m),
+            Some(BoardSource::Ble {
+                addr: Some("28:84:85:9F:D2:0E".to_string()),
+                scan: Some(std::time::Duration::from_secs(10)),
+            })
+        );
+    }
+
+    #[test]
+    fn leek_port_is_the_usb_source() {
+        let m = parse(&[
+            examples::BIN_NAME,
+            "--leek-port",
+            "/dev/ttyACM0",
+            "addresses",
+        ]);
+        assert_eq!(
+            BoardSource::from_matches(&m),
+            Some(BoardSource::Usb("/dev/ttyACM0".to_string()))
+        );
+        let m = parse(&[examples::BIN_NAME, "addresses"]);
+        assert_eq!(BoardSource::from_matches(&m), None);
+    }
+
+    /// One board source, one link: USB and Bluetooth together are refused,
+    /// as are a key source beside the board and a scan with no Bluetooth.
+    #[test]
+    fn leek_ble_refusals() {
+        assert!(refused(&[
+            "--leek-ble",
+            "--leek-port",
+            "/dev/ttyACM0",
+            "addresses"
+        ]));
+        assert!(refused(&[
+            "--leek-ble-addr",
+            "AA:BB",
+            "--leek-port",
+            "/dev/ttyACM0",
+            "addresses"
+        ]));
+        assert!(refused(&[
+            "--leek-ble",
+            "--viewkey",
+            "uview1x",
+            "addresses"
+        ]));
+        assert!(refused(&["--leek-ble-scan", "10", "addresses"]));
+        assert!(refused(&[
+            "--leek-ble",
+            "--leek-ble-scan",
+            "0",
+            "addresses"
+        ]));
+        assert!(refused(&[
+            "--leek-ble",
+            "--leek-ble-scan",
+            "61",
+            "addresses"
+        ]));
     }
 }
